@@ -6,16 +6,14 @@ const {
   VoiceConnectionStatus,
   entersState,
   getVoiceConnection,
+  AudioPlayerStatus,
+  NoSubscriberBehavior,
 } = require('@discordjs/voice');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const youtubedl = require('yt-dlp-exec');
-
 const ffmpegPath = require('ffmpeg-static');
-if (ffmpegPath) {
-  process.env.FFMPEG_PATH = ffmpegPath;
-}
 
 const client = new Client({
   intents: [
@@ -27,7 +25,16 @@ const client = new Client({
 });
 
 const prefix = '!';
-const player = createAudioPlayer();
+const player = createAudioPlayer({
+  behaviors: {
+    noSubscriber: NoSubscriberBehavior.Pause,
+  },
+});
+
+// حالة التكرار لكل سيرفر (guildId => boolean)
+const loopStates = new Map();
+// آخر طلب تشغيل لكل سيرفر لإعادة تشغيله عند التكرار
+const lastQueries = new Map();
 
 client.on('clientReady', () => {
   console.log(`✅ البوت شغال الآن باسم: ${client.user.tag}`);
@@ -37,40 +44,126 @@ function isUrl(value) {
   return /^https?:\/\//i.test(value);
 }
 
-async function createStreamFromQuery(query) {
+async function getDirectAudioUrl(query) {
   const localFile = path.join(__dirname, 'song.mp3');
 
   if (!query && fs.existsSync(localFile)) {
-    return createAudioResource(localFile);
+    return { source: localFile, title: 'song.mp3' };
   }
 
   if (!query) {
-    throw new Error('لم يتم إدخال رابط أو بحث');
+    throw new Error('لم يتم إدخال رابط أو اسم مقطع');
   }
 
-  // إذا كان رابط ملف صوتي مباشر مثل mp3 / ogg / wav
   if (isUrl(query) && /\.(mp3|ogg|wav|m4a|flac)(\?.*)?$/i.test(query)) {
-    return createAudioResource(query);
+    return { source: query, title: 'ملف صوتي مباشر' };
   }
 
-  // استخراج البث الصوتي عبر yt-dlp لـ SoundCloud و YouTube أو البحث النصي
   const target = isUrl(query) ? query : `ytsearch1:${query}`;
-  const ytdlpBinary = youtubedl.exec ? undefined : undefined;
 
-  const stream = await youtubedl.raw(target, {
-    format: 'bestaudio/best',
-    output: '-',
-    quiet: true,
+  const info = await youtubedl(target, {
+    dumpSingleJson: true,
     noWarnings: true,
     noPlaylist: true,
+    format: 'bestaudio/best',
   });
 
-  if (!stream.stdout) {
-    throw new Error('تعذّر الحصول على بث صوتي');
+  const streamUrl = info?.url;
+  if (!streamUrl) {
+    throw new Error('تعذّر استخراج رابط البث الصوتي');
   }
 
-  return createAudioResource(stream.stdout);
+  return {
+    source: streamUrl,
+    title: info?.title || 'مقطع صوتي',
+  };
 }
+
+function createFfmpegStream(source) {
+  if (typeof source === 'string' && !isUrl(source) && fs.existsSync(source)) {
+    return createAudioResource(source);
+  }
+
+  if (!ffmpegPath) {
+    return createAudioResource(source);
+  }
+
+  const ff = spawn(ffmpegPath, [
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
+    '-i', source,
+    '-analyzeduration', '0',
+    '-loglevel', '0',
+    '-f', 's16le',
+    '-ar', '48000',
+    '-ac', '2',
+    'pipe:1',
+  ], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+
+  ff.on('error', (err) => {
+    console.error('FFmpeg process error:', err);
+  });
+
+  return createAudioResource(ff.stdout);
+}
+
+async function ensureVoiceConnection(voiceChannel, guild) {
+  let connection = getVoiceConnection(guild.id);
+
+  if (!connection) {
+    connection = joinVoiceChannel({
+      channelId: voiceChannel.id,
+      guildId: guild.id,
+      adapterCreator: guild.voiceAdapterCreator,
+      selfDeaf: true,
+    });
+  }
+
+  connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    try {
+      await Promise.race([
+        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+      ]);
+    } catch {
+      try {
+        connection.destroy();
+      } catch {}
+    }
+  });
+
+  await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+  connection.subscribe(player);
+  return connection;
+}
+
+async function playTrack(guildId, query) {
+  const { source, title } = await getDirectAudioUrl(query);
+  const resource = createFfmpegStream(source);
+  player.play(resource);
+  return title;
+}
+
+player.on(AudioPlayerStatus.Idle, async () => {
+  for (const [guildId, isLooping] of loopStates.entries()) {
+    if (!isLooping) continue;
+    const prev = lastQueries.get(guildId);
+    if (!prev) continue;
+
+    try {
+      await playTrack(guildId, prev);
+    } catch (err) {
+      console.error('Loop replay error:', err);
+    }
+  }
+});
+
+player.on('error', (error) => {
+  console.error('Audio player error:', error);
+});
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
@@ -88,26 +181,33 @@ client.on('messageCreate', async (message) => {
     const query = args.join(' ').trim();
 
     try {
-      const connection = joinVoiceChannel({
-        channelId: voiceChannel.id,
-        guildId: message.guild.id,
-        adapterCreator: message.guild.voiceAdapterCreator,
-      });
+      await ensureVoiceConnection(voiceChannel, message.guild);
+      const title = await playTrack(message.guild.id, query);
+      lastQueries.set(message.guild.id, query);
 
-      await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-
-      const resource = await createStreamFromQuery(query);
-      connection.subscribe(player);
-      player.play(resource);
-
-      message.reply(`🎶 بدأ التشغيل في **${voiceChannel.name}**`);
+      message.reply(`🎶 جاري التشغيل الآن: **${title}** في **${voiceChannel.name}**`);
     } catch (error) {
       console.error('Playback error:', error);
       message.reply('❌ تعذّر تشغيل الصوت من هذا الرابط، جرّب رابط آخر أو تأكد من صلاحية المقطع');
     }
   }
 
+  if (command === 'loop') {
+    const current = loopStates.get(message.guild.id) || false;
+    const next = !current;
+    loopStates.set(message.guild.id, next);
+    message.reply(next ? '🔁 تم **تفعيل** تكرار المقطع الحالي' : '➡️ تم **إيقاف** تكرار المقطع');
+  }
+
+  if (command === 'skip') {
+    loopStates.set(message.guild.id, false);
+    player.stop();
+    message.reply('⏭️ تم تخطي المقطع الحالي');
+  }
+
   if (command === 'stop') {
+    loopStates.set(message.guild.id, false);
+    lastQueries.delete(message.guild.id);
     player.stop();
     const connection = getVoiceConnection(message.guild.id);
     if (connection) {
