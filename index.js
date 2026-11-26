@@ -40,6 +40,7 @@ const DEFAULT_CONFIG = {
     afk: true,
     text: 'TOP Life 🍷',
   },
+  allowedRoles: [],
   autoReplies: {},
   aliases: {},
 };
@@ -62,6 +63,7 @@ function loadConfig() {
         afk: typeof parsed?.presence?.afk === 'boolean' ? parsed.presence.afk : true,
         text: typeof parsed?.presence?.text === 'string' ? parsed.presence.text : 'TOP Life 🍷',
       },
+      allowedRoles: Array.isArray(parsed?.allowedRoles) ? parsed.allowedRoles.map(String) : [],
       autoReplies: parsed?.autoReplies && typeof parsed.autoReplies === 'object' ? parsed.autoReplies : {},
       aliases: parsed?.aliases && typeof parsed.aliases === 'object' ? parsed.aliases : {},
     };
@@ -98,6 +100,34 @@ const player = createAudioPlayer({
 
 const loopStates = new Map();
 const lastQueries = new Map();
+const activeRiddles = new Map();
+
+const RIDDLES = [
+  {
+    q: 'شيء يمشي بلا رجلين ويبكي بلا عينين، ما هو؟',
+    a: 'السحاب (أو الغيوم)',
+  },
+  {
+    q: 'له أوراق وما هو بنبات، وله جلد وما هو بحيوان، وله علم وما هو بإنسان، ما هو؟',
+    a: 'الكتاب',
+  },
+  {
+    q: 'كلما زاد نقص، ما هو؟',
+    a: 'العمر (أو الحفرة)',
+  },
+  {
+    q: 'يسمع بلا أذن ويتكلم بلا لسان، ما هو؟',
+    a: 'الهاتف',
+  },
+  {
+    q: 'له أسنان ولا يعض، ما هو؟',
+    a: 'المشط (أو المنشار)',
+  },
+  {
+    q: 'ما هو الشيء الذي يكتب ولا يقرأ؟',
+    a: 'القلم',
+  },
+];
 
 function applyBotPresence() {
   if (!client.user) return;
@@ -116,46 +146,61 @@ function applyBotPresence() {
   });
 }
 
+function canControlBot(member, guild) {
+  if (!member || !guild) return false;
+  if (member.id === guild.ownerId) return true;
+  if (member.permissions?.has(PermissionsBitField.Flags.Administrator)) return true;
+  if (!member.roles?.cache) return false;
+  return botConfig.allowedRoles.some((roleId) => member.roles.cache.has(roleId));
+}
+
+function extractRoleId(rawInput) {
+  if (!rawInput) return null;
+  const match = String(rawInput).trim().match(/^<@&(\d+)>$|^(\d{17,20})$/);
+  return match ? match[1] || match[2] : null;
+}
+
 const slashCommands = [
   new SlashCommandBuilder().setName('ping').setDescription('يعرض البنق الحالي للبوت'),
   new SlashCommandBuilder().setName('panel').setDescription('يعرض لوحة تحكم البوت والأوامر'),
   new SlashCommandBuilder().setName('info').setDescription('يعرض معلومات البوت والأوامر'),
   new SlashCommandBuilder().setName('voicetest').setDescription('اختبار اتصال الروم الصوتي وحالة جاهزية الصوت'),
+
+  // إدارة الرتب المسموح لها بالتحكم
+  new SlashCommandBuilder()
+    .setName('allowrole')
+    .setDescription('السماح لرتبة بالتحكم في البوت (للأدمن/المالك)')
+    .addRoleOption((opt) => opt.setName('role').setDescription('الرتبة المسموح لها').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('removerole')
+    .setDescription('إزالة رتبة من قائمة التحكم بالبوت (للأدمن/المالك)')
+    .addRoleOption((opt) => opt.setName('role').setDescription('الرتبة المراد إزالتها').setRequired(true)),
+  new SlashCommandBuilder().setName('listroles').setDescription('عرض الرتب المسموح لها بالتحكم في البوت'),
+
+  // الردود والاختصارات والحالة
   new SlashCommandBuilder()
     .setName('addreply')
-    .setDescription('إضافة رد تلقائي (للأدمن)')
-    .addStringOption((opt) =>
-      opt.setName('word').setDescription('الكلمة التي يرد عليها البوت').setRequired(true)
-    )
-    .addStringOption((opt) =>
-      opt.setName('reply').setDescription('الرد المطلوب من البوت').setRequired(true)
-    ),
+    .setDescription('إضافة رد تلقائي (للرتب المصرحة)')
+    .addStringOption((opt) => opt.setName('word').setDescription('الكلمة التي يرد عليها البوت').setRequired(true))
+    .addStringOption((opt) => opt.setName('reply').setDescription('الرد المطلوب من البوت').setRequired(true)),
   new SlashCommandBuilder()
     .setName('delreply')
-    .setDescription('حذف رد تلقائي (للأدمن)')
-    .addStringOption((opt) =>
-      opt.setName('word').setDescription('الكلمة المراد حذف ردها').setRequired(true)
-    ),
+    .setDescription('حذف رد تلقائي (للرتب المصرحة)')
+    .addStringOption((opt) => opt.setName('word').setDescription('الكلمة المراد حذف ردها').setRequired(true)),
   new SlashCommandBuilder().setName('listreplies').setDescription('عرض جميع الردود التلقائية'),
   new SlashCommandBuilder()
     .setName('addalias')
-    .setDescription('إضافة اختصار لأمر (للأدمن)')
-    .addStringOption((opt) =>
-      opt.setName('alias').setDescription('اسم الاختصار').setRequired(true)
-    )
-    .addStringOption((opt) =>
-      opt.setName('command').setDescription('الأمر الأصلي (مثل play أو stop)').setRequired(true)
-    ),
+    .setDescription('إضافة اختصار لأمر (للرتب المصرحة)')
+    .addStringOption((opt) => opt.setName('alias').setDescription('اسم الاختصار').setRequired(true))
+    .addStringOption((opt) => opt.setName('command').setDescription('الأمر الأصلي').setRequired(true)),
   new SlashCommandBuilder()
     .setName('delalias')
-    .setDescription('حذف اختصار أمر (للأدمن)')
-    .addStringOption((opt) =>
-      opt.setName('alias').setDescription('اسم الاختصار المراد حذفه').setRequired(true)
-    ),
+    .setDescription('حذف اختصار أمر (للرتب المصرحة)')
+    .addStringOption((opt) => opt.setName('alias').setDescription('اسم الاختصار المراد حذفه').setRequired(true)),
   new SlashCommandBuilder().setName('listaliases').setDescription('عرض جميع الاختصارات المفعّلة'),
   new SlashCommandBuilder()
     .setName('setstatus')
-    .setDescription('تغيير حالة البوت ونص الحالة (للأدمن)')
+    .setDescription('تغيير حالة البوت ونص الحالة (للرتب المصرحة)')
     .addStringOption((opt) =>
       opt
         .setName('status')
@@ -168,15 +213,59 @@ const slashCommands = [
           { name: 'مخفي (invisible)', value: 'invisible' }
         )
     )
+    .addStringOption((opt) => opt.setName('text').setDescription('نص الحالة المخصص').setRequired(false)),
+
+  // أوامر مفيدة للسيرفر والأعضاء
+  new SlashCommandBuilder().setName('serverinfo').setDescription('عرض معلومات السيرفر'),
+  new SlashCommandBuilder()
+    .setName('userinfo')
+    .setDescription('عرض معلومات عضو')
+    .addUserOption((opt) => opt.setName('user').setDescription('العضو المطلوب').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('avatar')
+    .setDescription('عرض صورة البروفايل')
+    .addUserOption((opt) => opt.setName('user').setDescription('العضو المطلوب').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('say')
+    .setDescription('إرسال رسالة باسم البوت (للرتب المصرحة)')
+    .addStringOption((opt) => opt.setName('message').setDescription('نص الرسالة').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('poll')
+    .setDescription('إنشاء تصويت سريع')
+    .addStringOption((opt) => opt.setName('question').setDescription('سؤال التصويت').setRequired(true)),
+
+  // أوامر الألعاب والألغاز
+  new SlashCommandBuilder().setName('coinflip').setDescription('رمي عملة: ملك أو كتابة'),
+  new SlashCommandBuilder()
+    .setName('roll')
+    .setDescription('رمي نرد عشوائي')
+    .addIntegerOption((opt) => opt.setName('max').setDescription('أقصى رقم (الافتراضي 6)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('rps')
+    .setDescription('لعبة حجر ورقة مقص ضد البوت')
     .addStringOption((opt) =>
-      opt.setName('text').setDescription('نص الحالة المخصص').setRequired(false)
+      opt
+        .setName('choice')
+        .setDescription('اختر حجر أو ورقة أو مقص')
+        .setRequired(true)
+        .addChoices(
+          { name: 'حجر 🪨', value: 'rock' },
+          { name: 'ورقة 📄', value: 'paper' },
+          { name: 'مقص ✂️', value: 'scissors' }
+        )
     ),
+  new SlashCommandBuilder()
+    .setName('guess')
+    .setDescription('خمن رقماً بين 1 و 10')
+    .addIntegerOption((opt) => opt.setName('number').setDescription('رقمك من 1 إلى 10').setRequired(true)),
+  new SlashCommandBuilder().setName('riddle').setDescription('الحصول على لغز جديد'),
+  new SlashCommandBuilder().setName('answer').setDescription('إظهار حل اللغز الحالي في القناة'),
+
+  // أوامر الصوت
   new SlashCommandBuilder()
     .setName('play')
     .setDescription('تشغيل مقطع صوتي في الروم الصوتي')
-    .addStringOption((opt) =>
-      opt.setName('query').setDescription('رابط أو اسم مقطع (اختياري لملف song.mp3)').setRequired(false)
-    ),
+    .addStringOption((opt) => opt.setName('query').setDescription('رابط أو اسم مقطع').setRequired(false)),
   new SlashCommandBuilder().setName('loop').setDescription('تفعيل أو إيقاف تكرار المقطع الحالي'),
   new SlashCommandBuilder().setName('skip').setDescription('تخطي المقطع الحالي'),
   new SlashCommandBuilder().setName('stop').setDescription('إيقاف الصوت والخروج من الروم الصوتي'),
@@ -207,10 +296,6 @@ client.on('clientReady', async () => {
 client.on('error', (err) => {
   console.error('Discord Client Error:', err);
 });
-
-function isAdmin(member) {
-  return Boolean(member?.permissions?.has(PermissionsBitField.Flags.Administrator));
-}
 
 function isUrl(value) {
   return /^https?:\/\//i.test(value);
@@ -416,7 +501,7 @@ player.on('error', (error) => {
   console.error('Audio player error:', error);
 });
 
-async function executeUnifiedCommand({ command, args, member, guild, botName, replyFn, updateFn }) {
+async function executeUnifiedCommand({ command, args, member, guild, channel, botName, replyFn, updateFn }) {
   const aliasTarget = botConfig.aliases[command.toLowerCase()];
   const resolvedCommand = (aliasTarget || command).toLowerCase();
 
@@ -427,14 +512,309 @@ async function executeUnifiedCommand({ command, args, member, guild, botName, re
   if (resolvedCommand === 'info' || resolvedCommand === 'panel') {
     return replyFn(
       `🎛️ **لوحة تحكم ${botName}**\n` +
-      `• الصوت: \`/play\`، \`/loop\`، \`/skip\`، \`/stop\`، \`/voicetest\`\n` +
-      `• الردود: \`/addreply\`، \`/delreply\`، \`/listreplies\`\n` +
-      `• الاختصارات: \`/addalias\`، \`/delalias\`، \`/listaliases\`\n` +
-      `• الحالة: \`/setstatus\`\n` +
-      `• خدمات: \`/ping\`، \`/panel\``
+      `• **الرتب والتحكم:** \`/allowrole\`، \`/removerole\`، \`/listroles\`، \`/setstatus\`\n` +
+      `• **الردود والاختصارات:** \`/addreply\`، \`/delreply\`، \`/listreplies\`، \`/addalias\`، \`/delalias\`، \`/listaliases\`\n` +
+      `• **أوامر مفيدة:** \`/serverinfo\`، \`/userinfo\`، \`/avatar\`، \`/say\`، \`/poll\`\n` +
+      `• **ألعاب وألغاز:** \`/coinflip\`، \`/roll\`، \`/rps\`، \`/guess\`، \`/riddle\`، \`/answer\`\n` +
+      `• **الصوت:** \`/play\`، \`/loop\`، \`/skip\`، \`/stop\`، \`/voicetest\``
     );
   }
 
+  // إدارة الرتب المسموح لها بالتحكم
+  if (resolvedCommand === 'allowrole') {
+    if (!canControlBot(member, guild)) {
+      return replyFn('⛔ غير مصرح لك بإدارة الرتب في البوت.');
+    }
+    const roleId = args.roleId || extractRoleId(args[0]);
+    if (!roleId) {
+      return replyFn('الاستخدام: `/allowrole role:@الرتبة` أو `!allowrole @الرتبة`');
+    }
+    const role = guild.roles.cache.get(roleId);
+    if (!role) {
+      return replyFn('❌ لم يتم العثور على هذه الرتبة في السيرفر.');
+    }
+    if (!botConfig.allowedRoles.includes(role.id)) {
+      botConfig.allowedRoles.push(role.id);
+      saveConfig();
+    }
+    return replyFn(`🛡️ تم منح الرتبة **${role.name}** صلاحية التحكم بالبوت.`);
+  }
+
+  if (resolvedCommand === 'removerole') {
+    if (!canControlBot(member, guild)) {
+      return replyFn('⛔ غير مصرح لك بإدارة الرتب في البوت.');
+    }
+    const roleId = args.roleId || extractRoleId(args[0]);
+    if (!roleId) {
+      return replyFn('الاستخدام: `/removerole role:@الرتبة` أو `!removerole @الرتبة`');
+    }
+    botConfig.allowedRoles = botConfig.allowedRoles.filter((id) => id !== roleId);
+    saveConfig();
+    return replyFn(`🗑️ تم إزالة الرتبة من قائمة التحكم بالبوت.`);
+  }
+
+  if (resolvedCommand === 'listroles') {
+    if (!botConfig.allowedRoles.length) {
+      return replyFn('🛡️ حالياً التحكم محصور على **الأدمن ومالك السيرفر** فقط (لا توجد رتب إضافية مضافة).');
+    }
+    const names = botConfig.allowedRoles
+      .map((id) => guild.roles.cache.get(id)?.name || `ID: ${id}`)
+      .map((n) => `• **${n}**`);
+    return replyFn(`🛡️ **الرتب المسموح لها بالتحكم بالبوت:**\n${names.join('\n')}`);
+  }
+
+  // الردود والاختصارات والحالة (محصورة بالرتب المصرحة)
+  if (resolvedCommand === 'addreply') {
+    if (!canControlBot(member, guild)) {
+      return replyFn('⛔ هذا الأمر متاح للرتب المصرحة بالتحكم بالبوت فقط.');
+    }
+    const trigger = (args.word ?? args[0] ?? '').toString().trim().toLowerCase();
+    const replyText = (args.reply ?? (Array.isArray(args) ? args.slice(1).join(' ') : '')).toString().trim();
+
+    if (!trigger || !replyText) {
+      return replyFn('الاستخدام الصحيح: `/addreply word:الكلمة reply:الرد` أو `!addreply الكلمة | الرد`');
+    }
+
+    botConfig.autoReplies[trigger] = replyText;
+    saveConfig();
+    return replyFn(`✅ تم حفظ الرد التلقائي للكلمة: **${trigger}**`);
+  }
+
+  if (resolvedCommand === 'delreply') {
+    if (!canControlBot(member, guild)) {
+      return replyFn('⛔ هذا الأمر متاح للرتب المصرحة بالتحكم بالبوت فقط.');
+    }
+    const trigger = (args.word ?? (Array.isArray(args) ? args.join(' ') : '')).toString().trim().toLowerCase();
+    if (!trigger || !Object.prototype.hasOwnProperty.call(botConfig.autoReplies, trigger)) {
+      return replyFn('❌ لم يتم العثور على رد تلقائي بهذه الكلمة.');
+    }
+
+    delete botConfig.autoReplies[trigger];
+    saveConfig();
+    return replyFn(`🗑️ تم حذف الرد التلقائي للكلمة: **${trigger}**`);
+  }
+
+  if (resolvedCommand === 'listreplies') {
+    const keys = Object.keys(botConfig.autoReplies);
+    if (keys.length === 0) {
+      return replyFn('📭 لا توجد ردود تلقائية مضافة حالياً.');
+    }
+    const lines = keys.map((k) => `• **${k}** ← ${botConfig.autoReplies[k]}`);
+    return replyFn(`💬 **الردود التلقائية:**\n${lines.join('\n')}`);
+  }
+
+  if (resolvedCommand === 'addalias') {
+    if (!canControlBot(member, guild)) {
+      return replyFn('⛔ هذا الأمر متاح للرتب المصرحة بالتحكم بالبوت فقط.');
+    }
+    const alias = (args.alias ?? args[0] ?? '').toString().trim().toLowerCase();
+    const targetCmd = (args.command ?? args[1] ?? '').toString().trim().toLowerCase();
+
+    if (!alias || !targetCmd) {
+      return replyFn('الاستخدام الصحيح: `/addalias alias:وقف command:stop` أو `!addalias وقف | stop`');
+    }
+
+    botConfig.aliases[alias] = targetCmd;
+    saveConfig();
+    return replyFn(`⚡ تم حفظ الاختصار: **/${alias}** ← **/${targetCmd}**`);
+  }
+
+  if (resolvedCommand === 'delalias') {
+    if (!canControlBot(member, guild)) {
+      return replyFn('⛔ هذا الأمر متاح للرتب المصرحة بالتحكم بالبوت فقط.');
+    }
+    const alias = (args.alias ?? (Array.isArray(args) ? args.join(' ') : '')).toString().trim().toLowerCase();
+    if (!alias || !Object.prototype.hasOwnProperty.call(botConfig.aliases, alias)) {
+      return replyFn('❌ لم يتم العثور على هذا الاختصار.');
+    }
+
+    delete botConfig.aliases[alias];
+    saveConfig();
+    return replyFn(`🗑️ تم حذف الاختصار: **/${alias}**`);
+  }
+
+  if (resolvedCommand === 'listaliases') {
+    const keys = Object.keys(botConfig.aliases);
+    if (keys.length === 0) {
+      return replyFn('📭 لا توجد اختصارات مضافة حالياً.');
+    }
+    const lines = keys.map((k) => `• **/${k}** ← **/${botConfig.aliases[k]}**`);
+    return replyFn(`⚡ **الاختصارات المفعّلة:**\n${lines.join('\n')}`);
+  }
+
+  if (resolvedCommand === 'setstatus') {
+    if (!canControlBot(member, guild)) {
+      return replyFn('⛔ هذا الأمر متاح للرتب المصرحة بالتحكم بالبوت فقط.');
+    }
+    const status = (args.status ?? args[0] ?? '').toString().trim().toLowerCase();
+    const validStatuses = ['online', 'idle', 'dnd', 'invisible'];
+
+    if (!validStatuses.includes(status)) {
+      return replyFn('الحالات المتاحة: `idle` ، `online` ، `dnd` ، `invisible`');
+    }
+
+    const customText =
+      args.text !== undefined
+        ? String(args.text).trim()
+        : Array.isArray(args) && args.length > 1
+          ? args.slice(1).join(' ').trim()
+          : botConfig.presence.text;
+
+    botConfig.presence.status = status;
+    botConfig.presence.afk = status === 'idle';
+    botConfig.presence.text = customText;
+    saveConfig();
+    applyBotPresence();
+    return replyFn(`🔄 تم تحديث الحالة إلى **${status}** والنص إلى **${customText}**`);
+  }
+
+  // أوامر مفيدة للسيرفر والأعضاء
+  if (resolvedCommand === 'serverinfo') {
+    const createdAt = `<t:${Math.floor(guild.createdTimestamp / 1000)}:R>`;
+    return replyFn(
+      `🏰 **معلومات السيرفر: ${guild.name}**\n` +
+      `• الأعضاء: **${guild.memberCount}**\n` +
+      `• الرومات: **${guild.channels.cache.size}**\n` +
+      `• الرتب: **${guild.roles.cache.size}**\n` +
+      `• تاريخ الإنشاء: ${createdAt}`
+    );
+  }
+
+  if (resolvedCommand === 'userinfo') {
+    const targetMember = args.targetMember || member;
+    const userObj = targetMember?.user;
+    if (!userObj) return replyFn('❌ تعذّر جلب بيانات العضو.');
+    const topRole = targetMember.roles?.highest?.name || 'لا يوجد';
+    const joinedAt = targetMember.joinedTimestamp
+      ? `<t:${Math.floor(targetMember.joinedTimestamp / 1000)}:R>`
+      : 'غير معروف';
+    return replyFn(
+      `👤 **معلومات العضو: ${userObj.tag}**\n` +
+      `• الآيدي: \`${userObj.id}\`\n` +
+      `• أعلى رتبة: **${topRole}**\n` +
+      `• انضم للسيرفر: ${joinedAt}`
+    );
+  }
+
+  if (resolvedCommand === 'avatar') {
+    const targetUser = args.targetUser || member?.user;
+    if (!targetUser) return replyFn('❌ تعذّر جلب الصورة.');
+    const avatarUrl = targetUser.displayAvatarURL({ size: 1024, extension: 'png' });
+    return replyFn(`🖼️ صورة **${targetUser.username}**:\n${avatarUrl}`);
+  }
+
+  if (resolvedCommand === 'say') {
+    if (!canControlBot(member, guild)) {
+      return replyFn('⛔ هذا الأمر متاح للرتب المصرحة بالتحكم بالبوت فقط.');
+    }
+    const textToSend = (args.message ?? (Array.isArray(args) ? args.join(' ') : '')).toString().trim();
+    if (!textToSend) {
+      return replyFn('الاستخدام: `/say message:النص` أو `!say النص`');
+    }
+    if (channel && typeof channel.send === 'function') {
+      await channel.send(textToSend);
+      return replyFn('✅ تم إرسال الرسالة.');
+    }
+    return replyFn(textToSend);
+  }
+
+  if (resolvedCommand === 'poll') {
+    const question = (args.question ?? (Array.isArray(args) ? args.join(' ') : '')).toString().trim();
+    if (!question) {
+      return replyFn('الاستخدام: `/poll question:السؤال` أو `!poll السؤال`');
+    }
+    const msg = await replyFn(`📊 **تصويت:** ${question}\n👍 موافق  |  👎 غير موافق`);
+    if (msg && typeof msg.react === 'function') {
+      try {
+        await msg.react('👍');
+        await msg.react('👎');
+      } catch {}
+    }
+    return msg;
+  }
+
+  // أوامر الألعاب والألغاز
+  if (resolvedCommand === 'coinflip') {
+    const result = Math.random() < 0.5 ? 'ملك 👑' : 'كتابة 📜';
+    return replyFn(`🪙 النتيجة: **${result}**`);
+  }
+
+  if (resolvedCommand === 'roll') {
+    const rawMax = Number(args.max ?? args[0] ?? 6);
+    const max = Number.isFinite(rawMax) && rawMax >= 2 && rawMax <= 100000 ? Math.floor(rawMax) : 6;
+    const rolled = Math.floor(Math.random() * max) + 1;
+    return replyFn(`🎲 رميت النرد (1 - ${max}) وطلع لك: **${rolled}**`);
+  }
+
+  if (resolvedCommand === 'rps') {
+    const rawChoice = (args.choice ?? args[0] ?? '').toString().trim().toLowerCase();
+    const mapChoice = {
+      rock: 'rock',
+      حجر: 'rock',
+      paper: 'paper',
+      ورقة: 'paper',
+      scissors: 'scissors',
+      مقص: 'scissors',
+    };
+    const userChoice = mapChoice[rawChoice];
+    if (!userChoice) {
+      return replyFn('اختر: `حجر` أو `ورقة` أو `مقص` (مثال: `/rps choice:حجر` أو `!rps مقص`)');
+    }
+
+    const options = ['rock', 'paper', 'scissors'];
+    const labels = { rock: 'حجر 🪨', paper: 'ورقة 📄', scissors: 'مقص ✂️' };
+    const botChoice = options[Math.floor(Math.random() * options.length)];
+
+    let outcome = 'تعادل 🤝';
+    if (
+      (userChoice === 'rock' && botChoice === 'scissors') ||
+      (userChoice === 'paper' && botChoice === 'rock') ||
+      (userChoice === 'scissors' && botChoice === 'paper')
+    ) {
+      outcome = 'فزت أنت 🎉';
+    } else if (userChoice !== botChoice) {
+      outcome = 'فاز البوت 🤖';
+    }
+
+    return replyFn(
+      `🎮 **حجر ورقة مقص**\n` +
+      `• اختيارك: **${labels[userChoice]}**\n` +
+      `• اختيار البوت: **${labels[botChoice]}**\n` +
+      `• النتيجة: **${outcome}**`
+    );
+  }
+
+  if (resolvedCommand === 'guess') {
+    const num = Number(args.number ?? args[0]);
+    if (!Number.isInteger(num) || num < 1 || num > 10) {
+      return replyFn('اختر رقماً صحيحاً بين **1** و **10** (مثال: `/guess number:7` أو `!guess 7`)');
+    }
+    const secret = Math.floor(Math.random() * 10) + 1;
+    if (num === secret) {
+      return replyFn(`🎯 أصبت! الرقم كان فعلاً **${secret}**`);
+    }
+    return replyFn(`❌ حظ أوفر، خمنت **${num}** والرقم الصحيح كان **${secret}**`);
+  }
+
+  if (resolvedCommand === 'riddle') {
+    const pick = RIDDLES[Math.floor(Math.random() * RIDDLES.length)];
+    activeRiddles.set(guild.id, pick);
+    return replyFn(
+      `🧩 **لغز جديد:**\n${pick.q}\n\n` +
+      `اكتب \`/answer\` أو \`!answer\` متى ما حبيت تشوف الحل.`
+    );
+  }
+
+  if (resolvedCommand === 'answer') {
+    const current = activeRiddles.get(guild.id);
+    if (!current) {
+      return replyFn('ℹ️ لا يوجد لغز نشط حالياً. ابدأ لغزاً جديداً عبر `/riddle` أو `!riddle`.');
+    }
+    activeRiddles.delete(guild.id);
+    return replyFn(`💡 **حل اللغز:** **${current.a}**`);
+  }
+
+  // أوامر الصوت
   if (resolvedCommand === 'voicetest') {
     const voiceChannel = member?.voice?.channel;
     if (!voiceChannel) {
@@ -458,110 +838,6 @@ async function executeUnifiedCommand({ command, args, member, guild, botName, re
         `• ملف \`song.mp3\` المحلي: **${hasLocalSong ? 'موجود' : 'غير موجود'}**`
       );
     }
-  }
-
-  if (resolvedCommand === 'addreply') {
-    if (!isAdmin(member)) {
-      return replyFn('⛔ هذا الأمر متاح للأدمن فقط.');
-    }
-    const trigger = (args.word ?? args[0] ?? '').toString().trim().toLowerCase();
-    const replyText = (args.reply ?? (Array.isArray(args) ? args.slice(1).join(' ') : '')).toString().trim();
-
-    if (!trigger || !replyText) {
-      return replyFn('الاستخدام الصحيح: `/addreply word:الكلمة reply:الرد` أو `!addreply الكلمة | الرد`');
-    }
-
-    botConfig.autoReplies[trigger] = replyText;
-    saveConfig();
-    return replyFn(`✅ تم حفظ الرد التلقائي للكلمة: **${trigger}**`);
-  }
-
-  if (resolvedCommand === 'delreply') {
-    if (!isAdmin(member)) {
-      return replyFn('⛔ هذا الأمر متاح للأدمن فقط.');
-    }
-    const trigger = (args.word ?? (Array.isArray(args) ? args.join(' ') : '')).toString().trim().toLowerCase();
-    if (!trigger || !Object.prototype.hasOwnProperty.call(botConfig.autoReplies, trigger)) {
-      return replyFn('❌ لم يتم العثور على رد تلقائي بهذه الكلمة.');
-    }
-
-    delete botConfig.autoReplies[trigger];
-    saveConfig();
-    return replyFn(`🗑️ تم حذف الرد التلقائي للكلمة: **${trigger}**`);
-  }
-
-  if (resolvedCommand === 'listreplies') {
-    const keys = Object.keys(botConfig.autoReplies);
-    if (keys.length === 0) {
-      return replyFn('📭 لا توجد ردود تلقائية مضافة حالياً.');
-    }
-    const lines = keys.map((k) => `• **${k}** ← ${botConfig.autoReplies[k]}`);
-    return replyFn(`💬 **الردود التلقائية:**\n${lines.join('\n')}`);
-  }
-
-  if (resolvedCommand === 'addalias') {
-    if (!isAdmin(member)) {
-      return replyFn('⛔ هذا الأمر متاح للأدمن فقط.');
-    }
-    const alias = (args.alias ?? args[0] ?? '').toString().trim().toLowerCase();
-    const targetCmd = (args.command ?? args[1] ?? '').toString().trim().toLowerCase();
-
-    if (!alias || !targetCmd) {
-      return replyFn('الاستخدام الصحيح: `/addalias alias:وقف command:stop` أو `!addalias وقف | stop`');
-    }
-
-    botConfig.aliases[alias] = targetCmd;
-    saveConfig();
-    return replyFn(`⚡ تم حفظ الاختصار: **/${alias}** ← **/${targetCmd}**`);
-  }
-
-  if (resolvedCommand === 'delalias') {
-    if (!isAdmin(member)) {
-      return replyFn('⛔ هذا الأمر متاح للأدمن فقط.');
-    }
-    const alias = (args.alias ?? (Array.isArray(args) ? args.join(' ') : '')).toString().trim().toLowerCase();
-    if (!alias || !Object.prototype.hasOwnProperty.call(botConfig.aliases, alias)) {
-      return replyFn('❌ لم يتم العثور على هذا الاختصار.');
-    }
-
-    delete botConfig.aliases[alias];
-    saveConfig();
-    return replyFn(`🗑️ تم حذف الاختصار: **/${alias}**`);
-  }
-
-  if (resolvedCommand === 'listaliases') {
-    const keys = Object.keys(botConfig.aliases);
-    if (keys.length === 0) {
-      return replyFn('📭 لا توجد اختصارات مضافة حالياً.');
-    }
-    const lines = keys.map((k) => `• **/${k}** ← **/${botConfig.aliases[k]}**`);
-    return replyFn(`⚡ **الاختصارات المفعّلة:**\n${lines.join('\n')}`);
-  }
-
-  if (resolvedCommand === 'setstatus') {
-    if (!isAdmin(member)) {
-      return replyFn('⛔ هذا الأمر متاح للأدمن فقط.');
-    }
-    const status = (args.status ?? args[0] ?? '').toString().trim().toLowerCase();
-    const validStatuses = ['online', 'idle', 'dnd', 'invisible'];
-
-    if (!validStatuses.includes(status)) {
-      return replyFn('الحالات المتاحة: `idle` ، `online` ، `dnd` ، `invisible`');
-    }
-
-    const customText =
-      args.text !== undefined
-        ? String(args.text).trim()
-        : Array.isArray(args) && args.length > 1
-          ? args.slice(1).join(' ').trim()
-          : botConfig.presence.text;
-
-    botConfig.presence.status = status;
-    botConfig.presence.afk = status === 'idle';
-    botConfig.presence.text = customText;
-    saveConfig();
-    applyBotPresence();
-    return replyFn(`🔄 تم تحديث الحالة إلى **${status}** والنص إلى **${customText}**`);
   }
 
   if (resolvedCommand === 'play') {
@@ -620,13 +896,27 @@ async function executeUnifiedCommand({ command, args, member, guild, botName, re
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand() || !interaction.guild) return;
 
+  const pickedRole = interaction.options.getRole('role');
+  const pickedUser = interaction.options.getUser('user');
+  const pickedMember = pickedUser
+    ? await interaction.guild.members.fetch(pickedUser.id).catch(() => null)
+    : interaction.member;
+
   const argsObj = {
+    roleId: pickedRole?.id || null,
+    targetUser: pickedUser || null,
+    targetMember: pickedMember || null,
     word: interaction.options.getString('word'),
     reply: interaction.options.getString('reply'),
     alias: interaction.options.getString('alias'),
     command: interaction.options.getString('command'),
     status: interaction.options.getString('status'),
     text: interaction.options.getString('text'),
+    message: interaction.options.getString('message'),
+    question: interaction.options.getString('question'),
+    max: interaction.options.getInteger('max'),
+    choice: interaction.options.getString('choice'),
+    number: interaction.options.getInteger('number'),
     query: interaction.options.getString('query'),
   };
 
@@ -637,6 +927,7 @@ client.on('interactionCreate', async (interaction) => {
     args: argsObj,
     member: interaction.member,
     guild: interaction.guild,
+    channel: interaction.channel,
     botName: client.user?.username || 'TOP BOT',
     replyFn: async (content) => {
       replied = true;
@@ -666,12 +957,23 @@ client.on('messageCreate', async (message) => {
     const rawCommand = parts.shift();
     if (!rawCommand) return;
 
+    const mentionedUser = message.mentions?.users?.first() || null;
+    const mentionedMember = mentionedUser
+      ? await message.guild.members.fetch(mentionedUser.id).catch(() => null)
+      : message.member;
+
+    const argsWithMeta = Object.assign([...parts], {
+      targetUser: mentionedUser,
+      targetMember: mentionedMember,
+    });
+
     let statusMessage = null;
     await executeUnifiedCommand({
       command: rawCommand,
-      args: parts,
+      args: argsWithMeta,
       member: message.member,
       guild: message.guild,
+      channel: message.channel,
       botName: client.user?.username || 'TOP BOT',
       replyFn: async (content) => {
         statusMessage = await message.reply(content);
