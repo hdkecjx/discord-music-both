@@ -15,6 +15,15 @@ const fs = require('fs');
 const youtubedl = require('yt-dlp-exec');
 const ffmpegPath = require('ffmpeg-static');
 
+// حماية البوت من أي خطأ غير متوقع عشان ما يطفي
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -36,6 +45,10 @@ const lastQueries = new Map();
 
 client.on('clientReady', () => {
   console.log(`✅ البوت شغال الآن باسم: ${client.user.tag}`);
+});
+
+client.on('error', (err) => {
+  console.error('Discord Client Error:', err);
 });
 
 function isUrl(value) {
@@ -73,11 +86,11 @@ async function getDirectAudioUrl(query) {
   const localFile = path.join(__dirname, 'song.mp3');
 
   if (!query && fs.existsSync(localFile)) {
-    return { source: localFile, title: 'song.mp3' };
+    return { source: localFile, title: 'song.mp3 (ملف محلي)' };
   }
 
   if (!query) {
-    throw new Error('لم يتم إدخال رابط أو اسم مقطع');
+    throw new Error('لم يتم إدخال رابط أو اسم مقطع ولا يوجد ملف song.mp3');
   }
 
   if (isUrl(query) && /\.(mp3|ogg|wav|m4a|flac)(\?.*)?$/i.test(query)) {
@@ -85,7 +98,6 @@ async function getDirectAudioUrl(query) {
   }
 
   const target = isUrl(query) ? query : `ytsearch1:${query}`;
-
   let title = 'مقطع صوتي';
   let streamUrl = null;
 
@@ -177,11 +189,6 @@ async function createFreshConnection(voiceChannel, guild) {
     guildId: guild.id,
     adapterCreator: guild.voiceAdapterCreator,
     selfDeaf: true,
-    debug: true,
-  });
-
-  connection.on('debug', (msg) => {
-    console.log('[VoiceDebug]', msg);
   });
 
   connection.on('stateChange', (oldState, newState) => {
@@ -214,7 +221,7 @@ async function ensureVoiceConnection(voiceChannel, guild) {
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
   } catch (err) {
-    console.warn('Retrying voice connection after timeout/abort:', err?.name || err);
+    console.warn('Retrying voice connection:', err?.name || err);
     connection = await createFreshConnection(voiceChannel, guild);
     await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
   }
@@ -254,6 +261,19 @@ client.on('messageCreate', async (message) => {
 
   const args = message.content.slice(prefix.length).trim().split(/\s+/);
   const command = args.shift()?.toLowerCase();
+
+  // ميزات إضافية غير الأغاني
+  if (command === 'ping') {
+    return message.reply(`🏓 البنق الحالي: **${Math.round(client.ws.ping)}ms**`);
+  }
+
+  if (command === 'info') {
+    return message.reply(
+      `🤖 **${client.user.username}**\n` +
+      `• الصوت: \`!play [رابط/بحث/ملف]\`، \`!loop\`، \`!skip\`، \`!stop\`\n` +
+      `• خدمات: \`!ping\`، \`!info\``
+    );
+  }
 
   if (command === 'play') {
     const voiceChannel = message.member?.voice?.channel;
