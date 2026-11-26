@@ -120,6 +120,7 @@ const slashCommands = [
   new SlashCommandBuilder().setName('ping').setDescription('يعرض البنق الحالي للبوت'),
   new SlashCommandBuilder().setName('panel').setDescription('يعرض لوحة تحكم البوت والأوامر'),
   new SlashCommandBuilder().setName('info').setDescription('يعرض معلومات البوت والأوامر'),
+  new SlashCommandBuilder().setName('voicetest').setDescription('اختبار اتصال الروم الصوتي وحالة جاهزية الصوت'),
   new SlashCommandBuilder()
     .setName('addreply')
     .setDescription('إضافة رد تلقائي (للأدمن)')
@@ -426,12 +427,37 @@ async function executeUnifiedCommand({ command, args, member, guild, botName, re
   if (resolvedCommand === 'info' || resolvedCommand === 'panel') {
     return replyFn(
       `🎛️ **لوحة تحكم ${botName}**\n` +
-      `• الصوت: \`/play\`، \`/loop\`، \`/skip\`، \`/stop\`\n` +
+      `• الصوت: \`/play\`، \`/loop\`، \`/skip\`، \`/stop\`، \`/voicetest\`\n` +
       `• الردود: \`/addreply\`، \`/delreply\`، \`/listreplies\`\n` +
       `• الاختصارات: \`/addalias\`، \`/delalias\`، \`/listaliases\`\n` +
       `• الحالة: \`/setstatus\`\n` +
       `• خدمات: \`/ping\`، \`/panel\``
     );
+  }
+
+  if (resolvedCommand === 'voicetest') {
+    const voiceChannel = member?.voice?.channel;
+    if (!voiceChannel) {
+      return replyFn('ادخل روم صوتي أولاً يا غالي 🎧');
+    }
+
+    await replyFn(`🔍 جاري اختبار الاتصال بالروم **${voiceChannel.name}**...`);
+    const hasLocalSong = fs.existsSync(path.join(__dirname, 'song.mp3'));
+
+    try {
+      await ensureVoiceConnection(voiceChannel, guild);
+      return updateFn(
+        `✅ **نتيجة اختبار الصوت:**\n` +
+        `• حالة الاتصال: **Ready (متصل وجاهز)**\n` +
+        `• ملف \`song.mp3\` المحلي: **${hasLocalSong ? 'موجود' : 'غير موجود'}**`
+      );
+    } catch (err) {
+      return updateFn(
+        `❌ **فشل اختبار اتصال الصوت:**\n` +
+        `• السبب: \`${err?.name || 'Error'}\` - ${err?.message || 'تعذّر إتمام حالة Ready'}\n` +
+        `• ملف \`song.mp3\` المحلي: **${hasLocalSong ? 'موجود' : 'غير موجود'}**`
+      );
+    }
   }
 
   if (resolvedCommand === 'addreply') {
