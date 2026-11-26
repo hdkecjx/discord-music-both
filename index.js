@@ -177,6 +177,15 @@ async function createFreshConnection(voiceChannel, guild) {
     guildId: guild.id,
     adapterCreator: guild.voiceAdapterCreator,
     selfDeaf: true,
+    debug: true,
+  });
+
+  connection.on('debug', (msg) => {
+    console.log('[VoiceDebug]', msg);
+  });
+
+  connection.on('stateChange', (oldState, newState) => {
+    console.log(`[VoiceState] ${oldState.status} -> ${newState.status}`);
   });
 
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
@@ -203,11 +212,11 @@ async function ensureVoiceConnection(voiceChannel, guild) {
   }
 
   try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 25_000);
+    await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
   } catch (err) {
     console.warn('Retrying voice connection after timeout/abort:', err?.name || err);
     connection = await createFreshConnection(voiceChannel, guild);
-    await entersState(connection, VoiceConnectionStatus.Ready, 25_000);
+    await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
   }
 
   connection.subscribe(player);
@@ -253,6 +262,7 @@ client.on('messageCreate', async (message) => {
     }
 
     const query = args.join(' ').trim();
+    const statusMsg = await message.reply('⏳ جاري التحضير والاتصال بالروم...');
     let step = 'استخراج الرابط';
 
     try {
@@ -266,10 +276,10 @@ client.on('messageCreate', async (message) => {
       player.play(resource);
 
       lastQueries.set(message.guild.id, query);
-      message.reply(`🎶 جاري التشغيل الآن: **${title}** في **${voiceChannel.name}**`);
+      await statusMsg.edit(`🎶 جاري التشغيل الآن: **${title}** في **${voiceChannel.name}**`);
     } catch (error) {
       console.error(`Playback error at [${step}]:`, error);
-      message.reply(`❌ تعذّر تشغيل الصوت أثناء (**${step}**)، جرّب رابط آخر أو تأكد من صلاحية المقطع`);
+      await statusMsg.edit(`❌ تعذّر تشغيل الصوت أثناء (**${step}**)، جرّب رابط آخر أو تأكد من صلاحية المقطع`);
     }
   }
 
