@@ -1,4 +1,12 @@
-const { Client, GatewayIntentBits, ActivityType, PermissionsBitField } = require('discord.js');
+const {
+  Client,
+  GatewayIntentBits,
+  ActivityType,
+  PermissionsBitField,
+  SlashCommandBuilder,
+  REST,
+  Routes,
+} = require('discord.js');
 const {
   joinVoiceChannel,
   createAudioPlayer,
@@ -108,12 +116,91 @@ function applyBotPresence() {
   });
 }
 
-client.on('clientReady', () => {
+const slashCommands = [
+  new SlashCommandBuilder().setName('ping').setDescription('يعرض البنق الحالي للبوت'),
+  new SlashCommandBuilder().setName('panel').setDescription('يعرض لوحة تحكم البوت والأوامر'),
+  new SlashCommandBuilder().setName('info').setDescription('يعرض معلومات البوت والأوامر'),
+  new SlashCommandBuilder()
+    .setName('addreply')
+    .setDescription('إضافة رد تلقائي (للأدمن)')
+    .addStringOption((opt) =>
+      opt.setName('word').setDescription('الكلمة التي يرد عليها البوت').setRequired(true)
+    )
+    .addStringOption((opt) =>
+      opt.setName('reply').setDescription('الرد المطلوب من البوت').setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('delreply')
+    .setDescription('حذف رد تلقائي (للأدمن)')
+    .addStringOption((opt) =>
+      opt.setName('word').setDescription('الكلمة المراد حذف ردها').setRequired(true)
+    ),
+  new SlashCommandBuilder().setName('listreplies').setDescription('عرض جميع الردود التلقائية'),
+  new SlashCommandBuilder()
+    .setName('addalias')
+    .setDescription('إضافة اختصار لأمر (للأدمن)')
+    .addStringOption((opt) =>
+      opt.setName('alias').setDescription('اسم الاختصار').setRequired(true)
+    )
+    .addStringOption((opt) =>
+      opt.setName('command').setDescription('الأمر الأصلي (مثل play أو stop)').setRequired(true)
+    ),
+  new SlashCommandBuilder()
+    .setName('delalias')
+    .setDescription('حذف اختصار أمر (للأدمن)')
+    .addStringOption((opt) =>
+      opt.setName('alias').setDescription('اسم الاختصار المراد حذفه').setRequired(true)
+    ),
+  new SlashCommandBuilder().setName('listaliases').setDescription('عرض جميع الاختصارات المفعّلة'),
+  new SlashCommandBuilder()
+    .setName('setstatus')
+    .setDescription('تغيير حالة البوت ونص الحالة (للأدمن)')
+    .addStringOption((opt) =>
+      opt
+        .setName('status')
+        .setDescription('حالة الاتصال')
+        .setRequired(true)
+        .addChoices(
+          { name: 'خامل (idle)', value: 'idle' },
+          { name: 'متصل (online)', value: 'online' },
+          { name: 'مشغول (dnd)', value: 'dnd' },
+          { name: 'مخفي (invisible)', value: 'invisible' }
+        )
+    )
+    .addStringOption((opt) =>
+      opt.setName('text').setDescription('نص الحالة المخصص').setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName('play')
+    .setDescription('تشغيل مقطع صوتي في الروم الصوتي')
+    .addStringOption((opt) =>
+      opt.setName('query').setDescription('رابط أو اسم مقطع (اختياري لملف song.mp3)').setRequired(false)
+    ),
+  new SlashCommandBuilder().setName('loop').setDescription('تفعيل أو إيقاف تكرار المقطع الحالي'),
+  new SlashCommandBuilder().setName('skip').setDescription('تخطي المقطع الحالي'),
+  new SlashCommandBuilder().setName('stop').setDescription('إيقاف الصوت والخروج من الروم الصوتي'),
+].map((cmd) => cmd.toJSON());
+
+async function registerSlashCommands() {
+  const token = process.env.DISCORD_TOKEN;
+  if (!token || !client.user) return;
+
+  const rest = new REST({ version: '10' }).setToken(token);
+  try {
+    await rest.put(Routes.applicationCommands(client.user.id), { body: slashCommands });
+    console.log('✅ تم تسجيل أوامر السلاش (/) بنجاح');
+  } catch (err) {
+    console.error('Slash commands registration error:', err);
+  }
+}
+
+client.on('clientReady', async () => {
   console.log(`✅ البوت شغال الآن باسم: ${client.user.tag}`);
   applyBotPresence();
   setTimeout(() => {
     applyBotPresence();
   }, 3000);
+  await registerSlashCommands();
 });
 
 client.on('error', (err) => {
@@ -328,185 +415,219 @@ player.on('error', (error) => {
   console.error('Audio player error:', error);
 });
 
-async function handleCommand(message, rawCommand, args) {
-  const aliasTarget = botConfig.aliases[rawCommand.toLowerCase()];
-  const command = (aliasTarget || rawCommand).toLowerCase();
+async function executeUnifiedCommand({ command, args, member, guild, botName, replyFn, updateFn }) {
+  const aliasTarget = botConfig.aliases[command.toLowerCase()];
+  const resolvedCommand = (aliasTarget || command).toLowerCase();
 
-  if (command === 'ping') {
-    return message.reply(`🏓 البنق الحالي: **${Math.round(client.ws.ping)}ms**`);
+  if (resolvedCommand === 'ping') {
+    return replyFn(`🏓 البنق الحالي: **${Math.round(client.ws.ping)}ms**`);
   }
 
-  if (command === 'info' || command === 'panel') {
-    return message.reply(
-      `🎛️ **لوحة تحكم ${client.user.username}**\n` +
-      `• الصوت: \`!play [رابط/بحث/ملف]\`، \`!loop\`، \`!skip\`، \`!stop\`\n` +
-      `• الردود: \`!addreply كلمة | الرد\`، \`!delreply كلمة\`، \`!listreplies\`\n` +
-      `• الاختصارات: \`!addalias اختصار | أمر\`، \`!delalias اختصار\`، \`!listaliases\`\n` +
-      `• الحالة: \`!setstatus idle | TOP Life 🍷\`\n` +
-      `• خدمات: \`!ping\`، \`!info\``
+  if (resolvedCommand === 'info' || resolvedCommand === 'panel') {
+    return replyFn(
+      `🎛️ **لوحة تحكم ${botName}**\n` +
+      `• الصوت: \`/play\`، \`/loop\`، \`/skip\`، \`/stop\`\n` +
+      `• الردود: \`/addreply\`، \`/delreply\`، \`/listreplies\`\n` +
+      `• الاختصارات: \`/addalias\`، \`/delalias\`، \`/listaliases\`\n` +
+      `• الحالة: \`/setstatus\`\n` +
+      `• خدمات: \`/ping\`، \`/panel\``
     );
   }
 
-  // أوامر إدارة الردود التلقائية
-  if (command === 'addreply') {
-    if (!isAdmin(message.member)) {
-      return message.reply('⛔ هذا الأمر متاح للأدمن فقط.');
+  if (resolvedCommand === 'addreply') {
+    if (!isAdmin(member)) {
+      return replyFn('⛔ هذا الأمر متاح للأدمن فقط.');
     }
-    const content = args.join(' ');
-    const [triggerRaw, ...replyParts] = content.split('|');
-    const trigger = (triggerRaw || '').trim().toLowerCase();
-    const replyText = replyParts.join('|').trim();
+    const trigger = (args.word ?? args[0] ?? '').toString().trim().toLowerCase();
+    const replyText = (args.reply ?? (Array.isArray(args) ? args.slice(1).join(' ') : '')).toString().trim();
 
     if (!trigger || !replyText) {
-      return message.reply('الاستخدام الصحيح: `!addreply الكلمة | الرد المطلوب`');
+      return replyFn('الاستخدام الصحيح: `/addreply word:الكلمة reply:الرد` أو `!addreply الكلمة | الرد`');
     }
 
     botConfig.autoReplies[trigger] = replyText;
     saveConfig();
-    return message.reply(`✅ تم حفظ الرد التلقائي للكلمة: **${trigger}**`);
+    return replyFn(`✅ تم حفظ الرد التلقائي للكلمة: **${trigger}**`);
   }
 
-  if (command === 'delreply') {
-    if (!isAdmin(message.member)) {
-      return message.reply('⛔ هذا الأمر متاح للأدمن فقط.');
+  if (resolvedCommand === 'delreply') {
+    if (!isAdmin(member)) {
+      return replyFn('⛔ هذا الأمر متاح للأدمن فقط.');
     }
-    const trigger = args.join(' ').trim().toLowerCase();
+    const trigger = (args.word ?? (Array.isArray(args) ? args.join(' ') : '')).toString().trim().toLowerCase();
     if (!trigger || !Object.prototype.hasOwnProperty.call(botConfig.autoReplies, trigger)) {
-      return message.reply('❌ لم يتم العثور على رد تلقائي بهذه الكلمة.');
+      return replyFn('❌ لم يتم العثور على رد تلقائي بهذه الكلمة.');
     }
 
     delete botConfig.autoReplies[trigger];
     saveConfig();
-    return message.reply(`🗑️ تم حذف الرد التلقائي للكلمة: **${trigger}**`);
+    return replyFn(`🗑️ تم حذف الرد التلقائي للكلمة: **${trigger}**`);
   }
 
-  if (command === 'listreplies') {
+  if (resolvedCommand === 'listreplies') {
     const keys = Object.keys(botConfig.autoReplies);
     if (keys.length === 0) {
-      return message.reply('📭 لا توجد ردود تلقائية مضافة حالياً.');
+      return replyFn('📭 لا توجد ردود تلقائية مضافة حالياً.');
     }
     const lines = keys.map((k) => `• **${k}** ← ${botConfig.autoReplies[k]}`);
-    return message.reply(`💬 **الردود التلقائية:**\n${lines.join('\n')}`);
+    return replyFn(`💬 **الردود التلقائية:**\n${lines.join('\n')}`);
   }
 
-  // أوامر إدارة الاختصارات
-  if (command === 'addalias') {
-    if (!isAdmin(message.member)) {
-      return message.reply('⛔ هذا الأمر متاح للأدمن فقط.');
+  if (resolvedCommand === 'addalias') {
+    if (!isAdmin(member)) {
+      return replyFn('⛔ هذا الأمر متاح للأدمن فقط.');
     }
-    const content = args.join(' ');
-    const [aliasRaw, targetRaw] = content.split('|');
-    const alias = (aliasRaw || '').trim().toLowerCase();
-    const targetCmd = (targetRaw || '').trim().toLowerCase();
+    const alias = (args.alias ?? args[0] ?? '').toString().trim().toLowerCase();
+    const targetCmd = (args.command ?? args[1] ?? '').toString().trim().toLowerCase();
 
     if (!alias || !targetCmd) {
-      return message.reply('الاستخدام الصحيح: `!addalias الاختصار | الأمر الأصلي` (مثال: `!addalias وقف | stop`)');
+      return replyFn('الاستخدام الصحيح: `/addalias alias:وقف command:stop` أو `!addalias وقف | stop`');
     }
 
     botConfig.aliases[alias] = targetCmd;
     saveConfig();
-    return message.reply(`⚡ تم حفظ الاختصار: **!${alias}** ← **!${targetCmd}**`);
+    return replyFn(`⚡ تم حفظ الاختصار: **/${alias}** ← **/${targetCmd}**`);
   }
 
-  if (command === 'delalias') {
-    if (!isAdmin(message.member)) {
-      return message.reply('⛔ هذا الأمر متاح للأدمن فقط.');
+  if (resolvedCommand === 'delalias') {
+    if (!isAdmin(member)) {
+      return replyFn('⛔ هذا الأمر متاح للأدمن فقط.');
     }
-    const alias = args.join(' ').trim().toLowerCase();
+    const alias = (args.alias ?? (Array.isArray(args) ? args.join(' ') : '')).toString().trim().toLowerCase();
     if (!alias || !Object.prototype.hasOwnProperty.call(botConfig.aliases, alias)) {
-      return message.reply('❌ لم يتم العثور على هذا الاختصار.');
+      return replyFn('❌ لم يتم العثور على هذا الاختصار.');
     }
 
     delete botConfig.aliases[alias];
     saveConfig();
-    return message.reply(`🗑️ تم حذف الاختصار: **!${alias}**`);
+    return replyFn(`🗑️ تم حذف الاختصار: **/${alias}**`);
   }
 
-  if (command === 'listaliases') {
+  if (resolvedCommand === 'listaliases') {
     const keys = Object.keys(botConfig.aliases);
     if (keys.length === 0) {
-      return message.reply('📭 لا توجد اختصارات مضافة حالياً.');
+      return replyFn('📭 لا توجد اختصارات مضافة حالياً.');
     }
-    const lines = keys.map((k) => `• **!${k}** ← **!${botConfig.aliases[k]}**`);
-    return message.reply(`⚡ **الاختصارات المفعّلة:**\n${lines.join('\n')}`);
+    const lines = keys.map((k) => `• **/${k}** ← **/${botConfig.aliases[k]}**`);
+    return replyFn(`⚡ **الاختصارات المفعّلة:**\n${lines.join('\n')}`);
   }
 
-  // تغيير الحالة والنص مباشرة
-  if (command === 'setstatus') {
-    if (!isAdmin(message.member)) {
-      return message.reply('⛔ هذا الأمر متاح للأدمن فقط.');
+  if (resolvedCommand === 'setstatus') {
+    if (!isAdmin(member)) {
+      return replyFn('⛔ هذا الأمر متاح للأدمن فقط.');
     }
-    const content = args.join(' ');
-    const [statusRaw, ...textParts] = content.split('|');
-    const status = (statusRaw || '').trim().toLowerCase();
+    const status = (args.status ?? args[0] ?? '').toString().trim().toLowerCase();
     const validStatuses = ['online', 'idle', 'dnd', 'invisible'];
 
     if (!validStatuses.includes(status)) {
-      return message.reply('الاستخدام الصحيح: `!setstatus idle | TOP Life 🍷` (الحالات: `online` / `idle` / `dnd` / `invisible`)');
+      return replyFn('الحالات المتاحة: `idle` ، `online` ، `dnd` ، `invisible`');
     }
 
-    const customText = textParts.length > 0 ? textParts.join('|').trim() : botConfig.presence.text;
+    const customText =
+      args.text !== undefined
+        ? String(args.text).trim()
+        : Array.isArray(args) && args.length > 1
+          ? args.slice(1).join(' ').trim()
+          : botConfig.presence.text;
+
     botConfig.presence.status = status;
     botConfig.presence.afk = status === 'idle';
     botConfig.presence.text = customText;
     saveConfig();
     applyBotPresence();
-    return message.reply(`🔄 تم تحديث الحالة إلى **${status}** والنص إلى **${customText}**`);
+    return replyFn(`🔄 تم تحديث الحالة إلى **${status}** والنص إلى **${customText}**`);
   }
 
-  // أوامر الصوت
-  if (command === 'play') {
-    const voiceChannel = message.member?.voice?.channel;
+  if (resolvedCommand === 'play') {
+    const voiceChannel = member?.voice?.channel;
     if (!voiceChannel) {
-      return message.reply('ادخل روم صوتي أولاً يا غالي 🎧');
+      return replyFn('ادخل روم صوتي أولاً يا غالي 🎧');
     }
 
-    const query = args.join(' ').trim();
-    const statusMsg = await message.reply('⏳ جاري التحضير والاتصال بالروم...');
+    const query = (args.query ?? (Array.isArray(args) ? args.join(' ') : '')).toString().trim();
+    await replyFn('⏳ جاري التحضير والاتصال بالروم...');
     let step = 'استخراج الرابط';
 
     try {
       const { source, title } = await getDirectAudioUrl(query);
 
       step = 'الاتصال بالروم الصوتي';
-      await ensureVoiceConnection(voiceChannel, message.guild);
+      await ensureVoiceConnection(voiceChannel, guild);
 
       step = 'تشغيل البث الصوتي';
       const resource = createFfmpegStream(source);
       player.play(resource);
 
-      lastQueries.set(message.guild.id, query);
-      await statusMsg.edit(`🎶 جاري التشغيل الآن: **${title}** في **${voiceChannel.name}**`);
+      lastQueries.set(guild.id, query);
+      await updateFn(`🎶 جاري التشغيل الآن: **${title}** في **${voiceChannel.name}**`);
     } catch (error) {
       console.error(`Playback error at [${step}]:`, error);
-      await statusMsg.edit(`❌ تعذّر تشغيل الصوت أثناء (**${step}**)، جرّب رابط آخر أو تأكد من صلاحية المقطع`);
+      await updateFn(`❌ تعذّر تشغيل الصوت أثناء (**${step}**)، جرّب رابط آخر أو تأكد من صلاحية المقطع`);
     }
   }
 
-  if (command === 'loop') {
-    const current = loopStates.get(message.guild.id) || false;
+  if (resolvedCommand === 'loop') {
+    const current = loopStates.get(guild.id) || false;
     const next = !current;
-    loopStates.set(message.guild.id, next);
-    message.reply(next ? '🔁 تم **تفعيل** تكرار المقطع الحالي' : '➡️ تم **إيقاف** تكرار المقطع');
+    loopStates.set(guild.id, next);
+    return replyFn(next ? '🔁 تم **تفعيل** تكرار المقطع الحالي' : '➡️ تم **إيقاف** تكرار المقطع');
   }
 
-  if (command === 'skip') {
-    loopStates.set(message.guild.id, false);
+  if (resolvedCommand === 'skip') {
+    loopStates.set(guild.id, false);
     player.stop();
-    message.reply('⏭️ تم تخطي المقطع الحالي');
+    return replyFn('⏭️ تم تخطي المقطع الحالي');
   }
 
-  if (command === 'stop') {
-    loopStates.set(message.guild.id, false);
-    lastQueries.delete(message.guild.id);
+  if (resolvedCommand === 'stop') {
+    loopStates.set(guild.id, false);
+    lastQueries.delete(guild.id);
     player.stop();
-    const connection = getVoiceConnection(message.guild.id);
+    const connection = getVoiceConnection(guild.id);
     if (connection) {
       connection.destroy();
     }
-    message.reply('⏹️ تم الإيقاف والخروج من الروم');
+    return replyFn('⏹️ تم الإيقاف والخروج من الروم');
   }
 }
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand() || !interaction.guild) return;
+
+  const argsObj = {
+    word: interaction.options.getString('word'),
+    reply: interaction.options.getString('reply'),
+    alias: interaction.options.getString('alias'),
+    command: interaction.options.getString('command'),
+    status: interaction.options.getString('status'),
+    text: interaction.options.getString('text'),
+    query: interaction.options.getString('query'),
+  };
+
+  let replied = false;
+
+  await executeUnifiedCommand({
+    command: interaction.commandName,
+    args: argsObj,
+    member: interaction.member,
+    guild: interaction.guild,
+    botName: client.user?.username || 'TOP BOT',
+    replyFn: async (content) => {
+      replied = true;
+      if (!interaction.replied && !interaction.deferred) {
+        return interaction.reply(content);
+      }
+      return interaction.followUp(content);
+    },
+    updateFn: async (content) => {
+      if (replied) {
+        return interaction.editReply(content);
+      }
+      replied = true;
+      return interaction.reply(content);
+    },
+  });
+});
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
@@ -515,10 +636,29 @@ client.on('messageCreate', async (message) => {
   const trimmed = message.content.trim();
 
   if (trimmed.startsWith(currentPrefix)) {
-    const args = trimmed.slice(currentPrefix.length).trim().split(/\s+/);
-    const rawCommand = args.shift();
+    const parts = trimmed.slice(currentPrefix.length).trim().split(/\s+/);
+    const rawCommand = parts.shift();
     if (!rawCommand) return;
-    await handleCommand(message, rawCommand, args);
+
+    let statusMessage = null;
+    await executeUnifiedCommand({
+      command: rawCommand,
+      args: parts,
+      member: message.member,
+      guild: message.guild,
+      botName: client.user?.username || 'TOP BOT',
+      replyFn: async (content) => {
+        statusMessage = await message.reply(content);
+        return statusMessage;
+      },
+      updateFn: async (content) => {
+        if (statusMessage) {
+          return statusMessage.edit(content);
+        }
+        statusMessage = await message.reply(content);
+        return statusMessage;
+      },
+    });
     return;
   }
 
