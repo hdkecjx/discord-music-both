@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits, ActivityType } = require('discord.js');
 const {
   joinVoiceChannel,
   createAudioPlayer,
@@ -15,7 +15,6 @@ const fs = require('fs');
 const youtubedl = require('yt-dlp-exec');
 const ffmpegPath = require('ffmpeg-static');
 
-// حماية البوت من أي خطأ غير متوقع عشان ما يطفي
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled Rejection:', reason);
 });
@@ -43,8 +42,22 @@ const player = createAudioPlayer({
 const loopStates = new Map();
 const lastQueries = new Map();
 
+function applyBotPresence() {
+  if (!client.user) return;
+  client.user.setPresence({
+    status: 'idle',
+    activities: [
+      {
+        name: 'TOP Life 🍷',
+        type: ActivityType.Custom,
+      },
+    ],
+  });
+}
+
 client.on('clientReady', () => {
   console.log(`✅ البوت شغال الآن باسم: ${client.user.tag}`);
+  applyBotPresence();
 });
 
 client.on('error', (err) => {
@@ -262,7 +275,6 @@ client.on('messageCreate', async (message) => {
   const args = message.content.slice(prefix.length).trim().split(/\s+/);
   const command = args.shift()?.toLowerCase();
 
-  // ميزات إضافية غير الأغاني
   if (command === 'ping') {
     return message.reply(`🏓 البنق الحالي: **${Math.round(client.ws.ping)}ms**`);
   }
