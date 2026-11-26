@@ -31,9 +31,7 @@ const player = createAudioPlayer({
   },
 });
 
-// حالة التكرار لكل سيرفر (guildId => boolean)
 const loopStates = new Map();
-// آخر طلب تشغيل لكل سيرفر لإعادة تشغيله عند التكرار
 const lastQueries = new Map();
 
 client.on('clientReady', () => {
@@ -110,17 +108,20 @@ function createFfmpegStream(source) {
   return createAudioResource(ff.stdout);
 }
 
-async function ensureVoiceConnection(voiceChannel, guild) {
-  let connection = getVoiceConnection(guild.id);
-
-  if (!connection) {
-    connection = joinVoiceChannel({
-      channelId: voiceChannel.id,
-      guildId: guild.id,
-      adapterCreator: guild.voiceAdapterCreator,
-      selfDeaf: true,
-    });
+async function createFreshConnection(voiceChannel, guild) {
+  const existing = getVoiceConnection(guild.id);
+  if (existing) {
+    try {
+      existing.destroy();
+    } catch {}
   }
+
+  const connection = joinVoiceChannel({
+    channelId: voiceChannel.id,
+    guildId: guild.id,
+    adapterCreator: guild.voiceAdapterCreator,
+    selfDeaf: true,
+  });
 
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
     try {
@@ -135,12 +136,29 @@ async function ensureVoiceConnection(voiceChannel, guild) {
     }
   });
 
-  await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
+  return connection;
+}
+
+async function ensureVoiceConnection(voiceChannel, guild) {
+  let connection = getVoiceConnection(guild.id);
+
+  if (!connection || connection.state.status === VoiceConnectionStatus.Destroyed) {
+    connection = await createFreshConnection(voiceChannel, guild);
+  }
+
+  try {
+    await entersState(connection, VoiceConnectionStatus.Ready, 25_000);
+  } catch (err) {
+    console.warn('Retrying voice connection after timeout/abort:', err?.name || err);
+    connection = await createFreshConnection(voiceChannel, guild);
+    await entersState(connection, VoiceConnectionStatus.Ready, 25_000);
+  }
+
   connection.subscribe(player);
   return connection;
 }
 
-async function playTrack(guildId, query) {
+async function playTrack(query) {
   const { source, title } = await getDirectAudioUrl(query);
   const resource = createFfmpegStream(source);
   player.play(resource);
@@ -154,7 +172,7 @@ player.on(AudioPlayerStatus.Idle, async () => {
     if (!prev) continue;
 
     try {
-      await playTrack(guildId, prev);
+      await playTrack(prev);
     } catch (err) {
       console.error('Loop replay error:', err);
     }
@@ -181,8 +199,8 @@ client.on('messageCreate', async (message) => {
     const query = args.join(' ').trim();
 
     try {
+      const title = await playTrack(query);
       await ensureVoiceConnection(voiceChannel, message.guild);
-      const title = await playTrack(message.guild.id, query);
       lastQueries.set(message.guild.id, query);
 
       message.reply(`🎶 جاري التشغيل الآن: **${title}** في **${voiceChannel.name}**`);
