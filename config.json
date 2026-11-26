@@ -5,6 +5,7 @@
     "afk": true,
     "text": "TOP Life 🍷"
   },
+  "allowedRoles": [],
   "autoReplies": {},
   "aliases": {}
 }
