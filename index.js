@@ -76,5 +76,5 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-const token = process.env.DISCORD_TOKEN || '‏MTU3NTQxNzAxNTExMDIxMzcwMg.GuErXD.FVKB2d8yY_O5RLBCIF1XLsv2iT4SV0jyRshHiw';
+const token = process.env.DISCORD_TOKEN || 'const token = process.env.DISCORD_TOKEN';
 client.login(token);
