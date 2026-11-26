@@ -197,16 +197,23 @@ client.on('messageCreate', async (message) => {
     }
 
     const query = args.join(' ').trim();
+    let step = 'استخراج الرابط';
 
     try {
-      const title = await playTrack(query);
-      await ensureVoiceConnection(voiceChannel, message.guild);
-      lastQueries.set(message.guild.id, query);
+      const { source, title } = await getDirectAudioUrl(query);
 
+      step = 'الاتصال بالروم الصوتي';
+      await ensureVoiceConnection(voiceChannel, message.guild);
+
+      step = 'تشغيل البث الصوتي';
+      const resource = createFfmpegStream(source);
+      player.play(resource);
+
+      lastQueries.set(message.guild.id, query);
       message.reply(`🎶 جاري التشغيل الآن: **${title}** في **${voiceChannel.name}**`);
     } catch (error) {
-      console.error('Playback error:', error);
-      message.reply('❌ تعذّر تشغيل الصوت من هذا الرابط، جرّب رابط آخر أو تأكد من صلاحية المقطع');
+      console.error(`Playback error at [${step}]:`, error);
+      message.reply(`❌ تعذّر تشغيل الصوت أثناء (**${step}**)، جرّب رابط آخر أو تأكد من صلاحية المقطع`);
     }
   }
 
