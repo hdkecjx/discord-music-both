@@ -42,6 +42,33 @@ function isUrl(value) {
   return /^https?:\/\//i.test(value);
 }
 
+function extractUrlFromInfo(info) {
+  if (!info) return null;
+  if (typeof info.url === 'string' && info.url.startsWith('http')) {
+    return info.url;
+  }
+
+  if (Array.isArray(info.formats) && info.formats.length > 0) {
+    const audioOnly = info.formats
+      .filter((f) => typeof f?.url === 'string' && f.url.startsWith('http') && f.acodec && f.acodec !== 'none')
+      .sort((a, b) => (b.abr || b.tbr || 0) - (a.abr || a.tbr || 0));
+
+    if (audioOnly[0]?.url) {
+      return audioOnly[0].url;
+    }
+
+    const anyWithUrl = [...info.formats]
+      .reverse()
+      .find((f) => typeof f?.url === 'string' && f.url.startsWith('http'));
+
+    if (anyWithUrl?.url) {
+      return anyWithUrl.url;
+    }
+  }
+
+  return null;
+}
+
 async function getDirectAudioUrl(query) {
   const localFile = path.join(__dirname, 'song.mp3');
 
@@ -59,21 +86,50 @@ async function getDirectAudioUrl(query) {
 
   const target = isUrl(query) ? query : `ytsearch1:${query}`;
 
-  const info = await youtubedl(target, {
-    dumpSingleJson: true,
-    noWarnings: true,
-    noPlaylist: true,
-    format: 'bestaudio/best',
-  });
+  let title = 'مقطع صوتي';
+  let streamUrl = null;
 
-  const streamUrl = info?.url;
+  try {
+    const info = await youtubedl(target, {
+      dumpSingleJson: true,
+      noWarnings: true,
+      noPlaylist: true,
+      format: 'bestaudio/best',
+      extractorArgs: 'youtube:player_client=android,web',
+    });
+
+    if (info?.title) {
+      title = info.title;
+    }
+    streamUrl = extractUrlFromInfo(info);
+  } catch (err) {
+    console.warn('JSON extract fallback triggered:', err?.shortMessage || err?.message || err);
+  }
+
+  if (!streamUrl) {
+    const rawUrl = await youtubedl(target, {
+      getUrl: true,
+      noWarnings: true,
+      noPlaylist: true,
+      format: 'bestaudio/best',
+      extractorArgs: 'youtube:player_client=android,web',
+    });
+
+    const firstLine = String(rawUrl || '')
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .find((s) => s.startsWith('http'));
+
+    streamUrl = firstLine || null;
+  }
+
   if (!streamUrl) {
     throw new Error('تعذّر استخراج رابط البث الصوتي');
   }
 
   return {
     source: streamUrl,
-    title: info?.title || 'مقطع صوتي',
+    title,
   };
 }
 
